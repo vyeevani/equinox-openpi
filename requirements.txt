@@ -8,3 +8,4 @@ jaxtyping
 numpy
 einops
 requests
+boto3

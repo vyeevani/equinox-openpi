@@ -1,5 +1,5 @@
 import dataclasses
-from typing import Sequence, TypeAlias
+from typing import Sequence, TypeAlias, List
 
 import jax
 import jax.numpy as jnp
@@ -143,3 +143,55 @@ class Module(equinox.Module):
 
     def embed(self, tokens: jaxtyping.Int[jaxtyping.Array, "b t"]) -> jaxtyping.Float[jaxtyping.Array, "b t d"]:
         return self.embedder.encode(tokens).astype(self.embed_dtype)
+
+def load(
+    llm_params,
+    configs: Sequence[Config] = [
+        Config(
+            width=2048,
+            depth=18,
+            mlp_dim=16_384,
+            num_heads=8,
+            num_kv_heads=1,
+            head_dim=256,
+            lora_configs={},
+        ),
+    ],
+    embed_dtype: str = "bfloat16",
+    dropout: float = 0.0,
+) -> Module:
+    model = Module(
+        configs=configs,
+        embed_dtype=embed_dtype,
+        dropout=dropout,
+        rng=jax.random.PRNGKey(0),
+    )
+
+    def get_model_params(model: Module) -> List[jax.Array]:
+        return (
+            model.embedder.input_embedding,
+            model.final_norm.scale,
+            model.layers.attn.attn_vec_einsum.w,
+            model.layers.attn.kv_einsum.w,
+            model.layers.attn.q_einsum.w,
+            model.layers.mlp.gating_einsum,
+            model.layers.mlp.linear,
+            model.layers.pre_attention_norm.scale,
+            model.layers.pre_ffw_norm.scale,
+        )
+    model = equinox.tree_at(
+        where=get_model_params,
+        pytree=model,
+        replace=tuple([jax.numpy.asarray(param) for param in [
+            llm_params["embedder"]["input_embedding"],
+            llm_params["final_norm"]["scale"],
+            llm_params["layers"]["attn"]["attn_vec_einsum"]["w"],
+            llm_params["layers"]["attn"]["kv_einsum"]["w"],
+            llm_params["layers"]["attn"]["q_einsum"]["w"],
+            llm_params["layers"]["mlp"]["gating_einsum"],
+            llm_params["layers"]["mlp"]["linear"],
+            llm_params["layers"]["pre_attention_norm"]["scale"],
+            llm_params["layers"]["pre_ffw_norm"]["scale"],
+        ]]),
+    )
+    return model

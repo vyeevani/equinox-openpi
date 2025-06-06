@@ -323,3 +323,91 @@ def decode_variant(variant):
         # pylint:enable=line-too-long
         **patch,
     }
+
+def load(
+    img_params,
+    variant: str = "So400m/14",
+    image_height: int = 224,
+    image_width: int = 224,
+    image_channels: int = 3,
+    num_classes: int = 2048,
+    dtype: str = "float32",
+) -> Module:
+    params = decode_variant(variant)
+    model = Module(
+        image_height=image_height,
+        image_width=image_width,
+        image_channels=image_channels,
+        rng=jax.random.PRNGKey(0),
+        num_classes=num_classes,
+        **params,
+        dtype=dtype
+    )
+    
+    # flax -> equinox: all kernels have their dimensions swapped because of the different conventions
+    replace_params = tuple([jax.numpy.asarray(param) for param in [
+        img_params["Transformer"]["encoder_norm"]["bias"],
+        img_params["Transformer"]["encoder_norm"]["scale"],
+        
+        img_params["Transformer"]["encoderblock"]["LayerNorm_0"]["bias"],
+        img_params["Transformer"]["encoderblock"]["LayerNorm_0"]["scale"],
+        img_params["Transformer"]["encoderblock"]["LayerNorm_1"]["bias"],
+        img_params["Transformer"]["encoderblock"]["LayerNorm_1"]["scale"],
+        
+        img_params["Transformer"]["encoderblock"]["MlpBlock_0"]["Dense_0"]["bias"],
+        einops.rearrange(img_params["Transformer"]["encoderblock"]["MlpBlock_0"]["Dense_0"]["kernel"], "a b c -> a c b"),
+        img_params["Transformer"]["encoderblock"]["MlpBlock_0"]["Dense_1"]["bias"],
+        einops.rearrange(img_params["Transformer"]["encoderblock"]["MlpBlock_0"]["Dense_1"]["kernel"], "a b c -> a c b"),
+        
+        einops.rearrange(img_params["Transformer"]["encoderblock"]["MultiHeadDotProductAttention_0"]["query"]["bias"], "a b c -> a (b c)"),
+        einops.rearrange(img_params["Transformer"]["encoderblock"]["MultiHeadDotProductAttention_0"]["query"]["kernel"], "a b c d -> a (c d) b"),
+        einops.rearrange(img_params["Transformer"]["encoderblock"]["MultiHeadDotProductAttention_0"]["key"]["bias"], "a b c -> a (b c)"),
+        einops.rearrange(img_params["Transformer"]["encoderblock"]["MultiHeadDotProductAttention_0"]["key"]["kernel"], "a b c d -> a (c d) b"),
+        einops.rearrange(img_params["Transformer"]["encoderblock"]["MultiHeadDotProductAttention_0"]["value"]["bias"], "a b c -> a (b c)"),
+        einops.rearrange(img_params["Transformer"]["encoderblock"]["MultiHeadDotProductAttention_0"]["value"]["kernel"], "a b c d -> a (c d) b"),
+        
+        img_params["Transformer"]["encoderblock"]["MultiHeadDotProductAttention_0"]["out"]["bias"],
+        einops.rearrange(img_params["Transformer"]["encoderblock"]["MultiHeadDotProductAttention_0"]["out"]["kernel"], "a b c d -> a d (b c)"),
+        
+        einops.rearrange(img_params["embedding"]["bias"], "d -> d 1 1"),
+        einops.rearrange(img_params["embedding"]["kernel"], "a b c d -> d c a b"),
+        
+        img_params["head"]["bias"],
+        einops.rearrange(img_params["head"]["kernel"], "a b -> b a"),
+        einops.rearrange(img_params["pos_embedding"], "1 a b -> a b"),
+    ]])
+    
+    def where_replace(x: Module):
+        return (
+            x.Transformer.encoder_norm.bias,
+            x.Transformer.encoder_norm.weight,
+            
+            x.Transformer.encoder_blocks.layer_norm_sa.bias,
+            x.Transformer.encoder_blocks.layer_norm_sa.weight,
+            x.Transformer.encoder_blocks.layer_norm_mlp.bias,
+            x.Transformer.encoder_blocks.layer_norm_mlp.weight,
+            
+            x.Transformer.encoder_blocks.mlp.layer_1.bias,
+            x.Transformer.encoder_blocks.mlp.layer_1.weight,
+            x.Transformer.encoder_blocks.mlp.layer_2.bias,
+            x.Transformer.encoder_blocks.mlp.layer_2.weight,
+            
+            x.Transformer.encoder_blocks.sa.query_proj.bias,
+            x.Transformer.encoder_blocks.sa.query_proj.weight,
+            x.Transformer.encoder_blocks.sa.key_proj.bias,
+            x.Transformer.encoder_blocks.sa.key_proj.weight,
+            x.Transformer.encoder_blocks.sa.value_proj.bias,
+            x.Transformer.encoder_blocks.sa.value_proj.weight,
+            
+            x.Transformer.encoder_blocks.sa.output_proj.bias,
+            x.Transformer.encoder_blocks.sa.output_proj.weight,
+            
+            x.embedding.bias,
+            x.embedding.weight,
+            
+            x.head.bias,
+            x.head.weight,
+            x.posemb,
+        )
+    model = equinox.tree_at(where=where_replace, pytree=model, replace=replace_params)
+    return model
