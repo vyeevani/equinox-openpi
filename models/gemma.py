@@ -232,7 +232,7 @@ def load(
             model.layers.pre_ffw_norm.scale,
             *[model.layers.expert_pre_ffw_norms[i].scale for i in range(len(configs) - 1)],
         )
-    model = equinox.tree_at(
+    model: Module = equinox.tree_at(
         where=get_model_params,
         pytree=model,
         replace=tuple([jax.numpy.asarray(param) for param in [

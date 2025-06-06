@@ -133,10 +133,13 @@ class Attention(equinox.Module):
         encoded = einops.rearrange(encoded, "B T K G H -> B T (K G) H")
         
         out = []
+        start = 0
         attn_vec_einsums = [self.attn_vec_einsum, *self.expert_attn_vec_einsums]
         for x, attn_vec_einsum in zip(xs, attn_vec_einsums, strict=True):
             if x is not None:
-                out.append(attn_vec_einsum(encoded))
+                end = start + x.shape[1]
+                out.append(attn_vec_einsum(encoded[:, start:end]))
+                start = end
             else:
                 out.append(None)
         return out, (k, v)
