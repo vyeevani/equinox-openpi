@@ -80,13 +80,15 @@ class Config(equinox.Module):
         )
 
 class Pi0(equinox.Module):
-    llm: gemma.Module
-    img: siglip.Module
-    state_proj: equinox.nn.Linear
-    action_in_proj: equinox.nn.Linear
-    action_time_mlp_in: equinox.nn.Linear
-    action_time_mlp_out: equinox.nn.Linear
-    action_out_proj: equinox.nn.Linear
+    action_horizon: int = equinox.field(static=True)
+    
+    llm: gemma.Module = equinox.field(static=False)
+    img: siglip.Module = equinox.field(static=False)
+    state_proj: equinox.nn.Linear = equinox.field(static=False)
+    action_in_proj: equinox.nn.Linear = equinox.field(static=False)
+    action_time_mlp_in: equinox.nn.Linear = equinox.field(static=False)
+    action_time_mlp_out: equinox.nn.Linear = equinox.field(static=False)
+    action_out_proj: equinox.nn.Linear = equinox.field(static=False)
     
     def __init__(self, config: Config, rng: jax.Array, dtype: str = "float32", dropout: float = 0.0):
         self.llm = gemma.Module(configs = [config.llm_config, config.action_expert_config], rng = rng, embed_dtype=dtype, dropout=dropout)
@@ -101,6 +103,8 @@ class Pi0(equinox.Module):
         self.action_time_mlp_out = equinox.nn.Linear(in_features = config.action_expert_config.width, out_features = config.action_expert_config.width, key = key)
         rng, key = jax.random.split(rng)
         self.action_out_proj = equinox.nn.Linear(in_features = config.action_expert_config.width, out_features = config.action_dim, key = key)
+        
+        self.action_horizon = config.action_horizon
         
     def __call__(
         self, 
@@ -124,12 +128,12 @@ class Pi0(equinox.Module):
         
         action_tokens = equinox.filter_vmap(self.action_in_proj)(actions)
         time_emb = posemb_sincos(timestep, self.action_in_proj.out_features, min_period=4e-3, max_period=4.0)
-        time_emb = einops.repeat(time_emb, "a d -> (t a) d", t=action_tokens.shape[0])
+        time_emb = einops.repeat(time_emb, "a d -> (t a) d", t=self.action_horizon)
         action_time_tokens, _ = einops.pack([action_tokens, time_emb], "t *")
         action_time_tokens = equinox.filter_vmap(self.action_time_mlp_in)(action_time_tokens)
         action_time_tokens = equinox.filter_vmap(jax.nn.swish)(action_time_tokens)
         action_time_tokens = equinox.filter_vmap(self.action_time_mlp_out)(action_time_tokens)
-        action_time_ar_mask = jnp.array([True] + [False] * (action_time_tokens.shape[0] - 1))
+        action_time_ar_mask = jnp.array([True] + [False] * (self.action_horizon - 1))
         
         context_tokens, _ = einops.pack([image_tokens, language_tokens], "* d")
         output_tokens, output_token_shapes = einops.pack([einops.rearrange(state_token, "d -> 1 d"), action_time_tokens], "* d")
@@ -148,6 +152,23 @@ class Pi0(equinox.Module):
         _, action_tokens = einops.unpack(output_tokens, output_token_shapes, "* d")
         actions = equinox.filter_vmap(self.action_out_proj)(action_tokens)
         return actions
+    
+    def sample_actions(
+        self,
+        language_token_ids: jax.Array,
+        image: jax.Array,
+        state: jax.Array,
+        key: jax.Array,
+        sample_steps: int = 10
+    ) -> jax.Array:
+        rng = key
+        noisy_actions = jax.random.normal(rng, (self.action_horizon, state.shape[-1]))
+        dt = jax.numpy.array([1 / sample_steps])
+        for i in range(sample_steps):
+            action_flow = self(language_token_ids, image, state, noisy_actions, dt * i, rng)
+            noisy_actions = noisy_actions + dt * action_flow
+            rng, key = jax.random.split(rng)
+        return noisy_actions
     
 def load(params, config: Config = Config.default(), dtype: str = "float32", dropout: float = 0.0) -> Pi0:
     pi0_model = Pi0(config, rng = jax.random.PRNGKey(0), dtype = dtype, dropout = dropout)
