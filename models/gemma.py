@@ -204,12 +204,12 @@ class Module(equinox.Module):
 def load(
     params,
     configs: Sequence[Config] = [Config.get_variant("gemma_2b")],
-    embed_dtype: str = "float32",
+    dtype: str = "float32",
     dropout: float = 0.0,
 ) -> Module:
     model = Module(
         configs=configs,
-        embed_dtype=embed_dtype,
+        embed_dtype=dtype,
         dropout=dropout,
         rng=jax.random.PRNGKey(0),
     )

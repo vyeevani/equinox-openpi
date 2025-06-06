@@ -177,6 +177,110 @@ class Encoder(equinox.Module):
         x = equinox.filter_vmap(self.encoder_norm)(x)
         return x, out
     
+class Config(equinox.Module):
+    image_height: int = equinox.field(static=True)
+    image_width: int = equinox.field(static=True)
+    image_channels: int = equinox.field(static=True)
+    num_classes: int = equinox.field(static=True)
+    patch_size: Sequence[int] = equinox.field(static=True)
+    width: int = equinox.field(static=True)
+    depth: int = equinox.field(static=True)
+    mlp_dim: int = equinox.field(static=True)
+    num_heads: int = equinox.field(static=True)
+    
+    @classmethod
+    def get_variant(
+        cls,
+        variant:str="So400m/14",
+        image_height: int = 224,
+        image_width: int = 224,
+        image_channels: int = 3,
+        num_classes: int = 2048,
+        patch_size: Sequence[int] = (16, 16),
+    ):
+        """Converts a string like "B" or "B/32" into a params dict."""
+        if variant is None:
+            return {}
+
+        v = variant
+        if "/" in variant:
+            v, patch = variant.split("/")
+            patch_size = (int(patch), int(patch))
+
+        width = {
+            "mu": 32,
+            "Ti": 192,
+            "S": 384,
+            "M": 512,
+            "B": 768,
+            "L": 1024,
+            "So400m": 1152,
+            "H": 1280,
+            "g": 1408,
+            "g-opt": 1536,
+            "G": 1664,
+            "G-opt": 1536,
+            "e": 1792,
+        }[v]
+        depth = {
+            "mu": 1,
+            "Ti": 12,
+            "S": 12,
+            "M": 12,
+            "B": 12,
+            "L": 24,
+            "So400m": 27,
+            "H": 32,
+            "g": 40,
+            "g-opt": 40,
+            "G": 48,
+            "G-opt": 48,
+            "e": 56,
+        }[v]
+        mlp_dim = {
+            "mu": 128,
+            "Ti": 768,
+            "S": 1536,
+            "M": 2048,
+            "B": 3072,
+            "L": 4096,
+            "So400m": 4304,
+            "H": 5120,
+            "g": 6144,
+            "g-opt": 6144,
+            "G": 8192,
+            "G-opt": 8192,
+            "e": 15360,
+        }[v]
+        num_heads = {
+            "mu": 2,
+            "Ti": 3,
+            "S": 6,
+            "M": 8,
+            "B": 12,
+            "L": 16,
+            "So400m": 16,
+            "H": 16,
+            "g": 16,
+            "g-opt": 16,
+            "G": 16,
+            "G-opt": 16,
+            "e": 16,
+        }[v]
+        return Config(
+            image_height=image_height,
+            image_width=image_width,
+            image_channels=image_channels,
+            num_classes=num_classes,
+            patch_size=patch_size,
+            width=width,
+            depth=depth,
+            mlp_dim=mlp_dim,
+            num_heads=num_heads,
+        )
+        
+
+    
 class Module(equinox.Module):
     embedding: equinox.nn.Conv = equinox.field(static=False)
     posemb: jax.Array = equinox.field(static=False)
@@ -186,44 +290,36 @@ class Module(equinox.Module):
     dtype_mm: str = equinox.field(static=True)
     
     def __init__(
-        self, 
-        image_height: int,
-        image_width: int,
-        image_channels: int,
-        rng: jax.Array, 
-        num_classes: int | None = None, 
-        patch_size: Sequence[int] = (16, 16),
-        width: int = 768,
-        depth: int = 12,
-        mlp_dim: int | None = None,
-        num_heads: int = 12,
+        self,
+        config: Config,
         dropout: float = 0.0,
+        rng: jax.Array = jax.random.PRNGKey(0),
         dtype: str = "float32",
     ):
         rng, key = jax.random.split(rng)
         self.embedding = conv_init(equinox.nn.Conv(
             num_spatial_dims=2,
-            in_channels=image_channels,
-            out_channels=width,
-            kernel_size=patch_size,
-            stride=patch_size,
+            in_channels=config.image_channels,
+            out_channels=config.width,
+            kernel_size=config.patch_size,
+            stride=config.patch_size,
             padding="VALID",
             dtype=dtype,
             key=jax.random.key(0),
         ), rng, dtype=dtype)
         rng, key = jax.random.split(rng)
-        self.posemb = jax.nn.initializers.normal(stddev=1 / jnp.sqrt(width))(key, (int(image_height * image_width / (patch_size[0] * patch_size[1])), width), dtype=jnp.float32)
+        self.posemb = jax.nn.initializers.normal(stddev=1 / jnp.sqrt(config.width))(key, (int(config.image_height * config.image_width / (config.patch_size[0] * config.patch_size[1])), config.width), dtype=jnp.float32)
         rng, key = jax.random.split(rng)
         self.Transformer = Encoder(
-            dim=width,
+            dim=config.width,
             rng=key,
-            depth=depth,
-            mlp_dim=mlp_dim,
-            num_heads=num_heads,
+            depth=config.depth,
+            mlp_dim=config.mlp_dim,
+            num_heads=config.num_heads,
             dropout=dropout,
             dtype=dtype,
         )
-        head = equinox.nn.Linear(width, num_classes, dtype=dtype, key=jax.random.key(0))
+        head = equinox.nn.Linear(config.width, config.num_classes, dtype=dtype, key=jax.random.key(0))
         self.head = linear_init(head, rng, kernel_init=jax.nn.initializers.zeros, bias_init=jax.nn.initializers.zeros, dtype=dtype)
         self.dropout = equinox.nn.Dropout(dropout)
         self.dtype_mm = dtype
@@ -247,116 +343,18 @@ class Module(equinox.Module):
         out["encoded"] = x
         x = equinox.filter_vmap(self.head)(x)
         return x, out
-    
-def decode_variant(variant):
-    """Converts a string like "B" or "B/32" into a params dict."""
-    if variant is None:
-        return {}
-
-    v, patch = variant, {}
-    if "/" in variant:
-        v, patch = variant.split("/")
-        patch = {"patch_size": (int(patch), int(patch))}
-
-    return {
-        # pylint:disable=line-too-long
-        # Reference: Table 2 of https://arxiv.org/abs/2106.04560.
-        "width": {
-            "mu": 32,
-            "Ti": 192,
-            "S": 384,
-            "M": 512,
-            "B": 768,
-            "L": 1024,
-            "So400m": 1152,
-            "H": 1280,
-            "g": 1408,
-            "g-opt": 1536,
-            "G": 1664,
-            "G-opt": 1536,
-            "e": 1792,
-        }[v],
-        "depth": {
-            "mu": 1,
-            "Ti": 12,
-            "S": 12,
-            "M": 12,
-            "B": 12,
-            "L": 24,
-            "So400m": 27,
-            "H": 32,
-            "g": 40,
-            "g-opt": 40,
-            "G": 48,
-            "G-opt": 48,
-            "e": 56,
-        }[v],
-        "mlp_dim": {
-            "mu": 128,
-            "Ti": 768,
-            "S": 1536,
-            "M": 2048,
-            "B": 3072,
-            "L": 4096,
-            "So400m": 4304,
-            "H": 5120,
-            "g": 6144,
-            "g-opt": 6144,
-            "G": 8192,
-            "G-opt": 8192,
-            "e": 15360,
-        }[v],
-        "num_heads": {
-            "mu": 2,
-            "Ti": 3,
-            "S": 6,
-            "M": 8,
-            "B": 12,
-            "L": 16,
-            "So400m": 16,
-            "H": 16,
-            "g": 16,
-            "g-opt": 16,
-            "G": 16,
-            "G-opt": 16,
-            "e": 16,
-        }[v],
-        # pylint:enable=line-too-long
-        **patch,
-    }
-    
-class Config(equinox.Module):
-    variant: str = equinox.field(static=True)
-    image_height: int = equinox.field(static=True)
-    image_width: int = equinox.field(static=True)
-    image_channels: int = equinox.field(static=True)
-    num_classes: int = equinox.field(static=True)
-    dtype: str = equinox.field(static=True)
-    
-    @classmethod
-    def default(cls, ) -> Self:
-        return cls(
-            variant="So400m/14",
-            image_height=224,
-            image_width=224,
-            image_channels=3,
-            num_classes=2048,
-            dtype="float32"
-        )
 
 def load(
     img_params,
-    config: Config = Config.default(),
+    config: Config = Config.get_variant(),
+    dtype: str = "float32",
+    dropout: float = 0.0,
 ) -> Module:
-    params = decode_variant(config.variant)
     model = Module(
-        image_height=config.image_height,
-        image_width=config.image_width,
-        image_channels=config.image_channels,
+        config=config,
+        dropout=dropout,
         rng=jax.random.PRNGKey(0),
-        num_classes=config.num_classes,
-        **params,
-        dtype=config.dtype
+        dtype=dtype
     )
     
     # flax -> equinox: all kernels have their dimensions swapped because of the different conventions
