@@ -1,0 +1,9 @@
+sentencepiece
+augmax
+flax
+orbax
+jax
+equinox
+jaxtyping
+numpy
+einops

@@ -1,0 +1,39 @@
+*.npz
+*.model
+*.png
+
+**/__pycache__/**
+**/*.pyc
+**/*.pyo
+**/*.pyd
+.Python
+
+# Development
+pytest
+pytest-cov
+black
+isort
+flake8
+mypy
+
+# Documentation
+sphinx
+sphinx-rtd-theme
+
+# Testing
+coverage
+pytest-xdist
+
+# Development Tools
+ipython
+jupyter
+notebook
+
+# Version Control
+git
+pre-commit
+
+# Environment
+python-dotenv
+
+.DS_Store
