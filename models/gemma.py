@@ -1,5 +1,5 @@
-import dataclasses
 from typing import Sequence, TypeAlias, List
+from typing_extensions import Self
 
 import jax
 import jax.numpy as jnp
@@ -23,6 +23,63 @@ class Config(equinox.Module):
     num_kv_heads: int = equinox.field(static=True)
     head_dim: int = equinox.field(static=True)
     lora_configs: dict[str, lora.Config] = equinox.field(static=True)
+    
+    @classmethod
+    def get_variant(cls, variant: str) -> Self:
+        """Returns config for specified gemma variant."""
+        if variant == "dummy":
+            return Config(
+                width=64,
+                depth=4,
+                mlp_dim=128,
+                num_heads=8,
+                num_kv_heads=1,
+                head_dim=16,
+                lora_configs={},
+            )
+        if variant == "gemma_300m":
+            # 311M params
+            return Config(
+                width=1024,
+                depth=18,
+                mlp_dim=4096,
+                num_heads=8,
+                num_kv_heads=1,
+                head_dim=256,
+                lora_configs={},
+            )
+        if variant == "gemma_2b":
+            return Config(
+                width=2048,
+                depth=18,
+                mlp_dim=16_384,
+                num_heads=8,
+                num_kv_heads=1,
+                head_dim=256,
+                lora_configs={},
+            )
+        if variant == "gemma_2b_lora":
+            return Config(
+                width=2048,
+                depth=18,
+                mlp_dim=16_384,
+                num_heads=8,
+                num_kv_heads=1,
+                head_dim=256,
+                lora_configs={"attn": lora.LoRAConfig(rank=16, alpha=16.0), "ffn": lora.LoRAConfig(rank=16, alpha=16.0)},
+            )
+        if variant == "gemma_300m_lora":
+            # 311M params
+            return Config(
+                width=1024,
+                depth=18,
+                mlp_dim=4096,
+                num_heads=8,
+                num_kv_heads=1,
+                head_dim=256,
+                lora_configs={"attn": lora.LoRAConfig(rank=32, alpha=32.0), "ffn": lora.LoRAConfig(rank=32, alpha=32.0)},
+            )
+        raise ValueError(f"Unknown variant: {variant}")
 
 class Block(equinox.Module):
     drop: equinox.Module = equinox.field(static=False)
@@ -145,19 +202,9 @@ class Module(equinox.Module):
         return self.embedder.encode(tokens).astype(self.embed_dtype)
 
 def load(
-    llm_params,
-    configs: Sequence[Config] = [
-        Config(
-            width=2048,
-            depth=18,
-            mlp_dim=16_384,
-            num_heads=8,
-            num_kv_heads=1,
-            head_dim=256,
-            lora_configs={},
-        ),
-    ],
-    embed_dtype: str = "bfloat16",
+    params,
+    configs: Sequence[Config] = [Config.get_variant("gemma_2b")],
+    embed_dtype: str = "float32",
     dropout: float = 0.0,
 ) -> Module:
     model = Module(
@@ -166,32 +213,45 @@ def load(
         dropout=dropout,
         rng=jax.random.PRNGKey(0),
     )
-
     def get_model_params(model: Module) -> List[jax.Array]:
         return (
             model.embedder.input_embedding,
             model.final_norm.scale,
             model.layers.attn.attn_vec_einsum.w,
+            *[model.layers.attn.expert_attn_vec_einsums[i].w for i in range(len(configs) - 1)],
             model.layers.attn.kv_einsum.w,
+            *[model.layers.attn.expert_kv_einsums[i].w for i in range(len(configs) - 1)],
             model.layers.attn.q_einsum.w,
+            *[model.layers.attn.expert_q_einsums[i].w for i in range(len(configs) - 1)],
             model.layers.mlp.gating_einsum,
+            *[model.layers.expert_mlps[i].gating_einsum for i in range(len(configs) - 1)],
             model.layers.mlp.linear,
+            *[model.layers.expert_mlps[i].linear for i in range(len(configs) - 1)],
             model.layers.pre_attention_norm.scale,
+            *[model.layers.expert_pre_attention_norms[i].scale for i in range(len(configs) - 1)],
             model.layers.pre_ffw_norm.scale,
+            *[model.layers.expert_pre_ffw_norms[i].scale for i in range(len(configs) - 1)],
         )
     model = equinox.tree_at(
         where=get_model_params,
         pytree=model,
         replace=tuple([jax.numpy.asarray(param) for param in [
-            llm_params["embedder"]["input_embedding"],
-            llm_params["final_norm"]["scale"],
-            llm_params["layers"]["attn"]["attn_vec_einsum"]["w"],
-            llm_params["layers"]["attn"]["kv_einsum"]["w"],
-            llm_params["layers"]["attn"]["q_einsum"]["w"],
-            llm_params["layers"]["mlp"]["gating_einsum"],
-            llm_params["layers"]["mlp"]["linear"],
-            llm_params["layers"]["pre_attention_norm"]["scale"],
-            llm_params["layers"]["pre_ffw_norm"]["scale"],
+            params["embedder"]["input_embedding"],
+            params["final_norm"]["scale"],
+            params["layers"]["attn"]["attn_vec_einsum"]["w"],
+            *[params["layers"]["attn"][f"attn_vec_einsum_{i}"]["w"] for i in range(1, len(configs))],
+            params["layers"]["attn"]["kv_einsum"]["w"],
+            *[params["layers"]["attn"][f"kv_einsum_{i}"]["w"] for i in range(1, len(configs))],
+            params["layers"]["attn"]["q_einsum"]["w"],
+            *[params["layers"]["attn"][f"q_einsum_{i}"]["w"] for i in range(1, len(configs))],
+            params["layers"]["mlp"]["gating_einsum"],
+            *[params["layers"][f"mlp_{i}"]["gating_einsum"] for i in range(1, len(configs))],
+            params["layers"]["mlp"]["linear"],
+            *[params["layers"][f"mlp_{i}"]["linear"] for i in range(1, len(configs))],
+            params["layers"]["pre_attention_norm"]["scale"],
+            *[params["layers"][f"pre_attention_norm_{i}"]["scale"] for i in range(1, len(configs))],
+            params["layers"]["pre_ffw_norm"]["scale"],
+            *[params["layers"][f"pre_ffw_norm_{i}"]["scale"] for i in range(1, len(configs))],
         ]]),
     )
     return model

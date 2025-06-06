@@ -1,4 +1,5 @@
 from typing import Sequence
+from typing_extensions import Self
 import jax
 import jax.numpy as jnp
 import equinox
@@ -323,25 +324,39 @@ def decode_variant(variant):
         # pylint:enable=line-too-long
         **patch,
     }
+    
+class Config(equinox.Module):
+    variant: str = equinox.field(static=True)
+    image_height: int = equinox.field(static=True)
+    image_width: int = equinox.field(static=True)
+    image_channels: int = equinox.field(static=True)
+    num_classes: int = equinox.field(static=True)
+    dtype: str = equinox.field(static=True)
+    
+    @classmethod
+    def default(cls, ) -> Self:
+        return cls(
+            variant="So400m/14",
+            image_height=224,
+            image_width=224,
+            image_channels=3,
+            num_classes=2048,
+            dtype="float32"
+        )
 
 def load(
     img_params,
-    variant: str = "So400m/14",
-    image_height: int = 224,
-    image_width: int = 224,
-    image_channels: int = 3,
-    num_classes: int = 2048,
-    dtype: str = "float32",
+    config: Config = Config.default(),
 ) -> Module:
-    params = decode_variant(variant)
+    params = decode_variant(config.variant)
     model = Module(
-        image_height=image_height,
-        image_width=image_width,
-        image_channels=image_channels,
+        image_height=config.image_height,
+        image_width=config.image_width,
+        image_channels=config.image_channels,
         rng=jax.random.PRNGKey(0),
-        num_classes=num_classes,
+        num_classes=config.num_classes,
         **params,
-        dtype=dtype
+        dtype=config.dtype
     )
     
     # flax -> equinox: all kernels have their dimensions swapped because of the different conventions

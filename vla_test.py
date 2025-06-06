@@ -2,11 +2,12 @@ import orbax.checkpoint
 import jax
 import equinox
 
-# Create a checkpointer
 checkpointer = orbax.checkpoint.PyTreeCheckpointer()
+params = checkpointer.restore("/Users/vineethyeevani/Documents/equinox_openpi/pi0_base/params")["params"]["PaliGemma"]
 
-# Restore the checkpoint directly
-params = checkpointer.restore("/Users/vineethyeevani/Documents/equinox_openpi/pi0_base/params")
-
-print("Successfully loaded checkpoint")
 equinox.tree_pprint(params)
+
+import models.gemma as gemma
+
+model = gemma.load(configs=[gemma.Config.get_variant("gemma_2b"), gemma.Config.get_variant("gemma_300m")], params= params["llm"])
+equinox.tree_pprint(model)
