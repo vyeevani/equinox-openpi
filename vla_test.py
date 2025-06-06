@@ -15,12 +15,10 @@ checkpointer = orbax.checkpoint.PyTreeCheckpointer()
 params = checkpointer.restore("/Users/vineethyeevani/Documents/equinox_openpi/pi0_base/params")["params"]
 pi0_model = pi0.load(params)
 
-actions = pi0_model.sample_actions(
+actions = pi0_model.sample_actions_with_cache(
     language_token_ids = language_token_ids,
     image = jnp.ones((224, 224, 3)),
     state = jnp.ones((32,)),
     sample_steps = 10,
     key = jax.random.PRNGKey(0),
 )
-
-equinox.tree_pprint(actions)
