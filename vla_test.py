@@ -11,11 +11,10 @@ from tqdm import tqdm
 import models.pi0 as pi0
 from tokenizer import Tokenizer
 
-# Load model
 prompt = "Transfer cube"
 tokenizer = Tokenizer()
 language_token_ids, language_mask = tokenizer.tokenize(prompt)
-# language_token_ids = language_token_ids[language_mask]
+language_token_ids = language_token_ids[language_mask]
 
 norm_stats = json.load(open("/Users/vineethyeevani/Documents/equinox_openpi/pi0_aloha_sim/assets/lerobot/aloha_sim_transfer_cube_human/norm_stats.json"))["norm_stats"]
 
@@ -73,20 +72,8 @@ for step in tqdm(range(1000)):
     original_state = state.copy()
     state = env_to_model_state(state)
     
-    # Check for NaN values in state and image
-    if jnp.isnan(state).any():
-        print("Error: NaN values detected in state")
-        print(state)
-        exit()
-    
-    if jnp.isnan(image).any():
-        print("Error: NaN values detected in image")
-        exit()
-    
-    # actions = pi0_model.sample_actions_with_cache(
-    actions = pi0_model.sample_actions(
+    actions = pi0_model.sample_actions_with_cache(
         language_token_ids=language_token_ids,
-        language_mask=language_mask,
         image=image,
         state=state,
         key=jax.random.PRNGKey(0),
