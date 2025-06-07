@@ -16,4 +16,4 @@ Status:
 Usage:
 See the llm_test.py for example usage of the PaliGemma VLM.  
 See vla_test.py for example usage of Pi0 VLA model.  
-![ALOHA Robot Demo](aloha.mp4)
+![ALOHA Robot Demo](aloha.gif)
