@@ -9,3 +9,4 @@ numpy
 einops
 requests
 boto3
+gym-aloha
