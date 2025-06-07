@@ -6,12 +6,13 @@ Motivation: Flax is hard to read and parse due to the stateful transforms hidden
 
 Status:
 - JAX/Equinox implementation of PaLI-Gemma 1/2, a multimodal language model from google combining PaLI and Gemma architectures: Tested and working
-- Supports transfusion for efficient model adaptation: Implemented
-- Vision Language Action modeling with OpenPI weights: Coming soon
+- Supports transfusion for efficient model adaptation: Tested and working
+- Vision Language Action modeling with OpenPI weights: Tested and working
 - A library implementation to generate text: Coming soon
 - A library implementation to generate actions: Coming soon
 - Finetuning: not planned in this repo
 - Running on actual robot: not planned in this repo
 
 Usage:
-See the main.py for example usage + decoding for the VLM
+See the llm_test.py for example usage of the PaliGemma VLM. 
+See vla_test.py for example usage of Pi0 VLA model.
