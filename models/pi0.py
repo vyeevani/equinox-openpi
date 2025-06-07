@@ -136,7 +136,7 @@ class Pi0(equinox.Module):
         _, kv_cache = self.llm([tokens, None], mask=attn_mask, positions=positions)
         return kv_cache, ar_mask
         
-    def call_with_cache(
+    def __call__(
         self, 
         context_cache: jax.Array,
         context_ar_mask: jax.Array,
@@ -177,7 +177,7 @@ class Pi0(equinox.Module):
         actions = equinox.filter_vmap(self.action_out_proj)(action_tokens)
         return actions
     
-    def sample_actions_with_cache(
+    def sample_actions(
         self,
         language_token_ids: jax.Array,
         image: jax.Array,
@@ -190,86 +190,17 @@ class Pi0(equinox.Module):
         context_cache, context_ar_mask = self.cache(language_token_ids, image, key)
         noisy_actions = jax.random.normal(rng, (self.action_horizon, state.shape[-1]))
         dt = jax.numpy.array([1 / sample_steps])
-        for i in range(sample_steps + 1):
-            time = 1.0 - (dt * i)
-            action_flow = self.call_with_cache(context_cache, context_ar_mask, state, noisy_actions, time, rng)
+        def body(carry, t):
+            noisy_actions, rng = carry
+            time = 1.0 - (dt * t)
+            action_flow = self(context_cache, context_ar_mask, state, noisy_actions, time, rng)
             noisy_actions = noisy_actions - (dt * action_flow)
             rng, key = jax.random.split(rng)
-        return noisy_actions
-    
-    def __call__(
-        self, 
-        language_token_ids: jax.Array, 
-        image: jax.Array,
-        state: jax.Array, 
-        actions: jax.Array, 
-        timestep: jax.Array,
-        key: jax.Array
-    ) -> jax.Array:
-        rng = key
-        
-        rng, key = jax.random.split(rng)
-        image_tokens, _ = self.img(image, key=key)
-        image_ar_mask = jnp.array([False] * image_tokens.shape[0])
-        image_valid_mask = jnp.ones_like(image_ar_mask)
-        
-        language_tokens = einops.rearrange(self.llm.embed(einops.rearrange(language_token_ids, "t -> 1 t")), "1 t d -> t d")
-        language_ar_mask = jnp.array([False] * language_tokens.shape[0])
-        language_valid_mask = jnp.ones_like(language_ar_mask)
-        
-        state_token = self.state_proj(state)
-        state_ar_mask = jnp.array([True])
-        state_valid_mask = jnp.ones_like(state_ar_mask)
-        
-        action_tokens = equinox.filter_vmap(self.action_in_proj)(actions)
-        time_emb = posemb_sincos(timestep, self.action_in_proj.out_features, min_period=4e-3, max_period=4.0)
-        time_emb = einops.repeat(time_emb, "a d -> (t a) d", t=self.action_horizon)
-        action_time_tokens, _ = einops.pack([action_tokens, time_emb], "t *")
-        action_time_tokens = equinox.filter_vmap(self.action_time_mlp_in)(action_time_tokens)
-        action_time_tokens = equinox.filter_vmap(jax.nn.swish)(action_time_tokens)
-        action_time_tokens = equinox.filter_vmap(self.action_time_mlp_out)(action_time_tokens)
-        
-        action_time_ar_mask = jnp.array([True] + [False] * (self.action_horizon - 1))
-        action_time_valid_mask = jnp.ones_like(action_time_ar_mask)
-        
-        context_tokens, _ = einops.pack([image_tokens, language_tokens], "* d")
-        output_tokens, output_token_shapes = einops.pack([einops.rearrange(state_token, "d -> 1 d"), action_time_tokens], "* d")
-        ar_mask, _ = einops.pack([image_ar_mask, language_ar_mask, state_ar_mask, action_time_ar_mask], "*")
-        valid_mask, _ = einops.pack([image_valid_mask, language_valid_mask, state_valid_mask, action_time_valid_mask], "*")
-        attn_mask = make_attn_mask(valid_mask, ar_mask)
-        positions = jnp.cumsum(valid_mask) - 1
-
-        rng, key = jax.random.split(rng)
-        context_tokens = einops.rearrange(context_tokens, "t d -> 1 t d")
-        output_tokens = einops.rearrange(output_tokens, "t d -> 1 t d")
-        attn_mask = einops.rearrange(attn_mask, "ta tb -> 1 ta tb")
-        positions = einops.rearrange(positions, "t -> 1 t")
-        (_, output_tokens), _ = self.llm([context_tokens, output_tokens], mask=attn_mask, positions=positions)
-        output_tokens = einops.rearrange(output_tokens, "1 t d -> t d")
-        _, action_tokens = einops.unpack(output_tokens, output_token_shapes, "* d")
-        actions = equinox.filter_vmap(self.action_out_proj)(action_tokens)
-        return actions
-    
-    def sample_actions(
-        self,
-        language_token_ids: jax.Array,
-        image: jax.Array,
-        state: jax.Array,
-        key: jax.Array,
-        sample_steps: int = 10
-    ) -> jax.Array:
-        rng = key
-        noisy_actions = jax.random.normal(rng, (self.action_horizon, state.shape[-1]))
-        dt = jax.numpy.array([1 / sample_steps])
-        for i in range(sample_steps + 1):
-            time = 1.0 - (dt * i)
-            action_flow = self(language_token_ids, image, state, noisy_actions, time, rng)
-            noisy_actions = noisy_actions - (dt * action_flow)
-            rng, key = jax.random.split(rng)
+            return (noisy_actions, rng), None
+        (noisy_actions, _), _ = jax.lax.scan(body, (noisy_actions, rng), jnp.arange(sample_steps + 1))
         return noisy_actions
     
 def load(params, config: Config = Config.default(), dtype: str = "float32", dropout: float = 0.0) -> Pi0:
-    equinox.tree_pprint(params)
     pi0_model = Pi0(config, rng = jax.random.PRNGKey(0), dtype = dtype, dropout = dropout)
     gemma_model = gemma.load(params["PaliGemma"]["llm"], configs=[config.llm_config, config.action_expert_config], dtype = dtype, dropout = dropout)
     img_model = siglip.load(params["PaliGemma"]["img"], config=config.img_config, dtype = dtype, dropout = dropout)
@@ -306,12 +237,9 @@ def load(params, config: Config = Config.default(), dtype: str = "float32", drop
         einops.rearrange(params["state_proj"]["kernel"], "d_in d_out -> d_out d_in"),
     ]])
      
-    equinox.tree_pprint(pi0_model)   
     replaced_pi0_model = equinox.tree_at(
         where = where_replace,
         pytree = pi0_model,
         replace = params_to_replace
     )
-    equinox.tree_pprint(replaced_pi0_model)
-    # exit()
     return replaced_pi0_model

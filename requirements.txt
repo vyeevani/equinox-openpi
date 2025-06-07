@@ -10,3 +10,5 @@ einops
 requests
 boto3
 gym-aloha
+rerun-sdk
+opencv-python
