@@ -113,7 +113,7 @@ class Pi0(equinox.Module):
         self,
         language_token_ids: jax.Array,
         image: jax.Array,
-        key: jax.Array
+        key: jax.Array,
     ):
         rng = key
         language_tokens = einops.rearrange(self.llm.embed(einops.rearrange(language_token_ids, "t -> 1 t")), "1 t d -> t d")
@@ -125,7 +125,6 @@ class Pi0(equinox.Module):
         
         tokens, _ = einops.pack([image_tokens, language_tokens], "* d")
         ar_mask, _ = einops.pack([image_ar_mask, language_ar_mask], "*")
-        
         valid_mask = jnp.ones_like(ar_mask)
         attn_mask = make_attn_mask(valid_mask, ar_mask)
         positions = jnp.cumsum(valid_mask) - 1
@@ -143,7 +142,7 @@ class Pi0(equinox.Module):
         state: jax.Array, 
         actions: jax.Array,
         timestep: jax.Array,
-        key: jax.Array
+        key: jax.Array,
     ) -> jax.Array:
         state_token = self.state_proj(state)
         state_ar_mask = jnp.array([False])
@@ -162,8 +161,7 @@ class Pi0(equinox.Module):
         output_valid_mask = jnp.ones_like(output_ar_mask)
         output_attn_mask = make_attn_mask(output_valid_mask, output_ar_mask)
         
-        context_valid_mask = jnp.ones_like(context_ar_mask)
-        context_attn_mask = einops.repeat(context_valid_mask, "a -> b a", b=output_tokens.shape[0])
+        context_attn_mask = einops.repeat(jnp.ones_like(context_ar_mask), "a -> b a", b=output_tokens.shape[0])
         
         attn_mask, _ = einops.pack([context_attn_mask, output_attn_mask], "a *")
         positions = jnp.sum(jnp.ones_like(context_ar_mask)) + jnp.cumsum(jnp.ones_like(output_ar_mask)) - 1
@@ -183,22 +181,61 @@ class Pi0(equinox.Module):
         image: jax.Array,
         state: jax.Array,
         key: jax.Array,
-        sample_steps: int = 10
+        sample_steps: int = 10,
+        cfg_scale: float = 1.0
     ) -> jax.Array:
         rng = key
         rng, key = jax.random.split(rng)
-        context_cache, context_ar_mask = self.cache(language_token_ids, image, key)
+        gc_context_cache, gc_context_ar_mask = self.cache(language_token_ids, image, key)
+        null_context_cache, null_context_ar_mask = self.cache(jnp.array([1]), image, key)
         noisy_actions = jax.random.normal(rng, (self.action_horizon, state.shape[-1]))
         dt = jax.numpy.array([1 / sample_steps])
         def body(carry, t):
             noisy_actions, rng = carry
             time = 1.0 - (dt * t)
-            action_flow = self(context_cache, context_ar_mask, state, noisy_actions, time, rng)
-            noisy_actions = noisy_actions - (dt * action_flow)
             rng, key = jax.random.split(rng)
-            return (noisy_actions, rng), None
-        (noisy_actions, _), _ = jax.lax.scan(body, (noisy_actions, rng), jnp.arange(sample_steps + 1))
-        return noisy_actions
+            gc_action_flow = self(gc_context_cache, gc_context_ar_mask, state, noisy_actions, time, key)
+            rng, key = jax.random.split(rng)
+            null_action_flow = self(null_context_cache, null_context_ar_mask, state, noisy_actions, time, key)
+            deviation = jax.numpy.linalg.norm(gc_action_flow - null_action_flow)
+            action_flow = null_action_flow + cfg_scale * (gc_action_flow - null_action_flow)
+            noisy_actions = noisy_actions - (dt * action_flow)
+            return (noisy_actions, rng), deviation
+        (noisy_actions, _), deviations = jax.lax.scan(body, (noisy_actions, rng), jnp.arange(sample_steps + 1))
+        deviation = jax.numpy.mean(deviations)
+        return noisy_actions, deviation
+    
+def sample_actions(
+    positive_model: Pi0,
+    negative_model: Pi0,
+    language_token_ids: jax.Array,
+    image: jax.Array,
+    state: jax.Array,
+    key: jax.Array,
+    sample_steps: int = 10,
+    cfg_scale: float = 1.0
+) -> jax.Array:
+    rng = key
+    rng, key = jax.random.split(rng)
+    positive_context_cache, positive_context_ar_mask = positive_model.cache(language_token_ids, image, key)
+    negative_context_cache, negative_context_ar_mask = negative_model.cache(jnp.array([1]), image, key)
+    assert positive_model.action_horizon == negative_model.action_horizon, "Positive and negative models must have the same action horizon"
+    noisy_actions = jax.random.normal(rng, (positive_model.action_horizon, state.shape[-1]))
+    dt = jax.numpy.array([1 / sample_steps])
+    def body(carry, t):
+        noisy_actions, rng = carry
+        time = 1.0 - (dt * t)
+        rng, key = jax.random.split(rng)
+        positive_action_flow = positive_model(positive_context_cache, positive_context_ar_mask, state, noisy_actions, time, key)
+        rng, key = jax.random.split(rng)
+        negative_action_flow = negative_model(negative_context_cache, negative_context_ar_mask, state, noisy_actions, time, key)
+        deviation = jax.numpy.linalg.norm(positive_action_flow - negative_action_flow)
+        action_flow = negative_action_flow + cfg_scale * (positive_action_flow - negative_action_flow)
+        noisy_actions = noisy_actions - (dt * action_flow)
+        return (noisy_actions, rng), deviation
+    (noisy_actions, _), deviations = jax.lax.scan(body, (noisy_actions, rng), jnp.arange(sample_steps + 1))
+    deviation = jax.numpy.mean(deviations)
+    return noisy_actions, deviation
     
 def load(params, config: Config = Config.default(), dtype: str = "float32", dropout: float = 0.0) -> Pi0:
     pi0_model = Pi0(config, rng = jax.random.PRNGKey(0), dtype = dtype, dropout = dropout)

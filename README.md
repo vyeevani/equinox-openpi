@@ -14,6 +14,14 @@ Status:
 - Running on actual robot: not planned in this repo
 
 Usage:
-See the llm_test.py for example usage of the PaliGemma VLM.  
-See vla_test.py for example usage of Pi0 VLA model.  
+For language model: See the llm_test.py for example usage of the PaliGemma VLM.  
+
+For OpenPi:
+1. Get the awscli
+2. download the model weights with the following command:
+```bash
+aws s3 cp s3://openpi-assets/checkpoints/pi0_aloha_sim/ ./pi0_aloha_sim/ --recursive --no-sign-request
+```
+3. See vla_test.py for example usage of Pi0 VLA model.  
+
 ![ALOHA Robot Demo](aloha.gif)

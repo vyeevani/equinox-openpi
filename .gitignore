@@ -1,6 +1,7 @@
 *.npz
 *.model
 *.png
+cloud.py
 
 **/__pycache__/**
 **/*.pyc
