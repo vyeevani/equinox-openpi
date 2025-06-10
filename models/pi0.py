@@ -212,13 +212,13 @@ def sample_actions(
     image: jax.Array,
     state: jax.Array,
     key: jax.Array,
-    sample_steps: int = 10,
-    cfg_scale: float = 1.0
+    sample_steps: int,
+    cfg_scale: float,
 ) -> jax.Array:
     rng = key
     rng, key = jax.random.split(rng)
     positive_context_cache, positive_context_ar_mask = positive_model.cache(language_token_ids, image, key)
-    negative_context_cache, negative_context_ar_mask = negative_model.cache(jnp.array([1]), image, key)
+    negative_context_cache, negative_context_ar_mask = negative_model.cache(language_token_ids, image, key)
     assert positive_model.action_horizon == negative_model.action_horizon, "Positive and negative models must have the same action horizon"
     noisy_actions = jax.random.normal(rng, (positive_model.action_horizon, state.shape[-1]))
     dt = jax.numpy.array([1 / sample_steps])

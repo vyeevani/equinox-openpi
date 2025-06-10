@@ -10,6 +10,9 @@ import gymnasium as gym
 import numpy as np
 import gym_aloha
 import json
+from jax.sharding import NamedSharding, Mesh
+from jax.experimental import mesh_utils
+
 
 from tqdm import tqdm
 import models.pi0 as pi0
@@ -34,18 +37,28 @@ norm_stats = json.load(open(os.path.join(folder_path, "pi0_aloha_sim/assets/lero
 print("Normalization stats loaded successfully")
 
 print("Loading model checkpoint...")
-checkpointer = orbax.checkpoint.PyTreeCheckpointer()
-checkpoint = checkpointer.restore(os.path.join(folder_path, "pi0_aloha_sim/params"))
-params = checkpoint["params"]
-# annoyingly, the params are stored as a dict with a "value" key in the orbax checkpoint
 is_value = lambda x: isinstance(x, dict) and "value" in x and isinstance(x["value"], jax.Array)
-params = jax.tree.map(lambda x: x["value"], params, is_leaf=is_value)
+checkpointer = orbax.checkpoint.AsyncCheckpointer(orbax.checkpoint.StandardCheckpointHandler())
+
+fine_tuned_checkpoint = checkpointer.restore(os.path.join(folder_path, "pi0_aloha_sim/params"))
+fine_tuned_params = fine_tuned_checkpoint["params"]
+fine_tuned_params = jax.tree.map(lambda x: x["value"], fine_tuned_params, is_leaf=is_value)
+
+mesh = Mesh(mesh_utils.create_device_mesh((1,)), ('x',))
+sharding = NamedSharding(mesh, jax.sharding.PartitionSpec(None))
+base_checkpoint = checkpointer.restore(
+    os.path.join(folder_path, "pi0_base/params"),
+    args=orbax.checkpoint.args.StandardRestore(fallback_sharding=sharding),
+)
+base_params = base_checkpoint["params"]
 print("Model checkpoint loaded successfully")
 
 print("Initializing model...")
 config = pi0.Config.default()
-pi0_model = pi0.load(params)
-pi0_model = equinox.nn.inference_mode(pi0_model)
+fine_tuned_pi0_model = pi0.load(fine_tuned_params)
+base_pi0_model = pi0.load(base_params)
+fine_tuned_pi0_model = equinox.nn.inference_mode(fine_tuned_pi0_model)
+base_pi0_model = equinox.nn.inference_mode(base_pi0_model)
 print("Model initialized successfully")
 
 print("Defining utility functions...")
@@ -106,7 +119,7 @@ for i in tqdm(range(100), position=0):
 
 
     print("Starting main execution loop...")
-    cfg = 1.0
+    cfg = 1.5
     print(f"Using cfg scale: {cfg}")
     for step in tqdm(range(1000), position=1):
         image = observation["pixels"]["top"]
@@ -118,7 +131,9 @@ for i in tqdm(range(100), position=0):
         original_state = state.copy()
         state = env_to_model_state(state)
         
-        actions, deviation = equinox.filter_jit(pi0_model.sample_actions)(
+        actions, deviation = equinox.filter_jit(pi0.sample_actions)(
+            positive_model=fine_tuned_pi0_model,
+            negative_model=base_pi0_model,
             language_token_ids=language_token_ids,
             image=image,
             state=state,
