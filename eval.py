@@ -1,5 +1,9 @@
 import sys
 import os
+if sys.platform == "linux":
+    print("Setting MUJOCO_GL to egl")
+    os.environ["MUJOCO_GL"] = "egl"
+
 import time
 import orbax.checkpoint
 import jax
@@ -39,26 +43,25 @@ print("Normalization stats loaded successfully")
 print("Loading model checkpoint...")
 is_value = lambda x: isinstance(x, dict) and "value" in x and isinstance(x["value"], jax.Array)
 checkpointer = orbax.checkpoint.AsyncCheckpointer(orbax.checkpoint.StandardCheckpointHandler())
-
 fine_tuned_checkpoint = checkpointer.restore(os.path.join(folder_path, "pi0_aloha_sim/params"))
 fine_tuned_params = fine_tuned_checkpoint["params"]
 fine_tuned_params = jax.tree.map(lambda x: x["value"], fine_tuned_params, is_leaf=is_value)
-
-mesh = Mesh(mesh_utils.create_device_mesh((1,)), ('x',))
-sharding = NamedSharding(mesh, jax.sharding.PartitionSpec(None))
-base_checkpoint = checkpointer.restore(
-    os.path.join(folder_path, "pi0_base/params"),
-    args=orbax.checkpoint.args.StandardRestore(fallback_sharding=sharding),
-)
-base_params = base_checkpoint["params"]
 print("Model checkpoint loaded successfully")
-
 print("Initializing model...")
 config = pi0.Config.default()
 fine_tuned_pi0_model = pi0.load(fine_tuned_params)
-base_pi0_model = pi0.load(base_params)
 fine_tuned_pi0_model = equinox.nn.inference_mode(fine_tuned_pi0_model)
-base_pi0_model = equinox.nn.inference_mode(base_pi0_model)
+
+# mesh = Mesh(mesh_utils.create_device_mesh((1,)), ('x',))
+# sharding = NamedSharding(mesh, jax.sharding.PartitionSpec(None))
+# base_checkpoint = checkpointer.restore(
+#     os.path.join(folder_path, "pi0_base/params"),
+#     args=orbax.checkpoint.args.StandardRestore(fallback_sharding=sharding),
+# )
+# base_params = base_checkpoint["params"]
+# base_pi0_model = pi0.load(base_params)
+# base_pi0_model = equinox.nn.inference_mode(base_pi0_model)
+
 print("Model initialized successfully")
 
 print("Defining utility functions...")
@@ -102,7 +105,7 @@ else:
     rerun_utils.connect_grpc(recording, port=9876, detach_process=True)
 
 episode_reward_list = []
-for i in tqdm(range(100), position=0):
+for i in tqdm(range(1000), position=0):
     episode_reward = 0
     env = gym.make("gym_aloha/AlohaTransferCube-v0", obs_type="pixels_agent_pos")
     print("Environment initialized successfully")
@@ -119,7 +122,7 @@ for i in tqdm(range(100), position=0):
 
 
     print("Starting main execution loop...")
-    cfg = 1.5
+    cfg = 3.0
     print(f"Using cfg scale: {cfg}")
     for step in tqdm(range(1000), position=1):
         image = observation["pixels"]["top"]
@@ -131,9 +134,18 @@ for i in tqdm(range(100), position=0):
         original_state = state.copy()
         state = env_to_model_state(state)
         
-        actions, deviation = equinox.filter_jit(pi0.sample_actions)(
-            positive_model=fine_tuned_pi0_model,
-            negative_model=base_pi0_model,
+        # actions, deviation = equinox.filter_jit(pi0.sample_actions)(
+        #     positive_model=fine_tuned_pi0_model,
+        #     negative_model=base_pi0_model,
+        #     language_token_ids=language_token_ids,
+        #     image=image,
+        #     state=state,
+        #     key=jax.random.PRNGKey(0),
+        #     sample_steps=10,
+        #     cfg_scale=cfg
+        # )
+        
+        actions, deviation = equinox.filter_jit(fine_tuned_pi0_model.sample_actions)(
             language_token_ids=language_token_ids,
             image=image,
             state=state,
@@ -141,6 +153,7 @@ for i in tqdm(range(100), position=0):
             sample_steps=10,
             cfg_scale=cfg
         )
+        
         # print(f"Deviation: {deviation}")
         actions = model_to_env_actions(actions)
         

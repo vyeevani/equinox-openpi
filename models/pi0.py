@@ -201,7 +201,7 @@ class Pi0(equinox.Module):
             action_flow = null_action_flow + cfg_scale * (gc_action_flow - null_action_flow)
             noisy_actions = noisy_actions - (dt * action_flow)
             return (noisy_actions, rng), deviation
-        (noisy_actions, _), deviations = jax.lax.scan(body, (noisy_actions, rng), jnp.arange(sample_steps + 1))
+        (noisy_actions, _), deviations = jax.lax.scan(body, (noisy_actions, rng), jnp.arange(sample_steps))
         deviation = jax.numpy.mean(deviations)
         return noisy_actions, deviation
     
